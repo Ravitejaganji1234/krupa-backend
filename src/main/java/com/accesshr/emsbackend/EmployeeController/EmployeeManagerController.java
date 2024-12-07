@@ -6,6 +6,9 @@ import com.accesshr.emsbackend.Dto.EmployeeManagerDTO;
 import com.accesshr.emsbackend.Dto.LoginDTO;
 import com.accesshr.emsbackend.Service.EmployeeManagerService;
 import com.accesshr.emsbackend.response.LoginResponse;
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.BlobProperties;
+import com.azure.storage.blob.models.BlobStorageException;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,11 +28,14 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/employeeManager")
-@CrossOrigin(origins = "https://localhost:3000/") // Adjust as needed for your frontend
+@CrossOrigin(origins = "http://localhost:3000") // Adjust as needed for your frontend
 public class EmployeeManagerController {
 
-    @Value("${file.upload-dir}")
-    private String uploadDir; // Path to your Documents folder
+    @Value("${azure.storage.connection-string}")
+    private String connectionString;
+
+    @Value("${azure.storage.container-name}")
+    private String containerName;
 
     private final EmployeeManagerService employeeManagerService;
 
@@ -95,7 +101,7 @@ public class EmployeeManagerController {
     }
 
     // Registration endpoint (for Admins)
-    @PostMapping("/register")
+    @PostMapping(value="/register", produces = "application/json")
     public ResponseEntity<?> registerAdmin(
             @Valid @RequestParam("firstName") String firstName,
             @RequestParam("lastName") String lastName,
@@ -118,16 +124,70 @@ public class EmployeeManagerController {
         }
     }
 
-    // Save files (reuse from previous add employee)
-    private String saveFile(MultipartFile file, String fileType) throws IOException {
-        if (file != null && !file.isEmpty()) {
-            Path filePath = Paths.get(uploadDir, fileType + "-" + file.getOriginalFilename());
-            Files.write(filePath, file.getBytes());
-            return filePath.toString();
+    @PostMapping("/upload")
+    public ResponseEntity<String> uploadFile(@RequestParam("nationalCard") MultipartFile nationalCard) {
+        try {
+            String blobName = uploadFIle(nationalCard, "nationalCard");
+            return ResponseEntity.ok(blobName);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error uploading file: " + e.getMessage());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
         }
-        return null;
     }
 
+    public void init(){
+        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
+                .connectionString(connectionString)
+                .buildClient();
+    }
+
+    public String uploadFIle(MultipartFile file, String caption) throws IOException{
+        String blobFilename=file.getOriginalFilename();
+
+        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
+                .connectionString(connectionString)
+                .buildClient();
+        BlobClient blobClient=blobServiceClient
+                .getBlobContainerClient(containerName)
+                .getBlobClient(blobFilename);
+
+        blobClient.upload(file.getInputStream(), file.getSize(), true);
+        String fileUrl=blobClient.getBlobUrl();
+
+        return fileUrl;
+    }
+
+    private String saveFile(MultipartFile file, String fileType) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("The file cannot be null or empty.");
+        }
+
+        // Create a BlobContainerClient
+        BlobContainerClient blobContainerClient = new BlobClientBuilder()
+                .connectionString(connectionString)
+                .containerName(containerName)
+                .buildClient().getContainerClient();
+
+        String originalFilename = file.getOriginalFilename();
+        if (originalFilename == null) {
+            throw new IllegalArgumentException("Original filename cannot be null.");
+        }
+
+        String blobName = fileType + "-" + originalFilename;
+
+        // Log the blob name before uploading
+        System.out.println("Uploading to blob name: " + blobName);
+
+        // Upload the file to Blob Storage
+        BlobClient blobClient = blobContainerClient.getBlobClient(blobName);
+        blobClient.upload(file.getInputStream(), file.getSize(), true);
+
+        return blobName; // Return the blob name or URL if needed
+    }
+
+
+    // Save optional file to Azure Blob Storage
     private String saveOptionalFile(MultipartFile file, String fileType) throws IOException {
         if (file != null && !file.isEmpty()) {
             return saveFile(file, fileType);
@@ -136,7 +196,7 @@ public class EmployeeManagerController {
     }
 
     // New login endpoint
-    @PostMapping("/login")
+    @PostMapping(value="/login", produces = "application/json")
     public ResponseEntity<LoginResponse> login(@RequestBody LoginDTO loginDTO) {
         LoginResponse response = employeeManagerService.loginEmployee(loginDTO);
         return new ResponseEntity<>(response, response.getStatus() ? HttpStatus.OK : HttpStatus.UNAUTHORIZED);
@@ -145,7 +205,7 @@ public class EmployeeManagerController {
 
 
     // Fetch all employees
-    @GetMapping("/employees")
+    @GetMapping(value = "/employees", produces = "application/json")
     public ResponseEntity<?> getAllEmployees() {
         try {
             List<EmployeeManagerDTO> employees = employeeManagerService.getAllEmployees();
@@ -207,21 +267,31 @@ public class EmployeeManagerController {
     @GetMapping("/fileSize")
     public ResponseEntity<Map<String, Long>> getFileSize(@RequestParam String fileName) {
         try {
-            Path filePath = Paths.get(uploadDir, fileName); // Construct the file path
-            File file = filePath.toFile(); // Convert to File object
+            BlobContainerClient blobContainerClient = new BlobClientBuilder()
+                    .connectionString(connectionString)
+                    .containerName(containerName)
+                    .buildClient().getContainerClient();
 
-            if (file.exists()) {
-                Map<String, Long> response = new HashMap<>();
-                response.put("size", file.length()); // Size in bytes
-                return ResponseEntity.ok(response);
-            } else {
-                // If the file does not exist, return a size of 0 with an appropriate message
+            // Get the blob properties
+            BlobProperties properties = blobContainerClient.getBlobClient(fileName).getProperties();
+
+            // Prepare response with file size
+            Map<String, Long> response = new HashMap<>();
+            response.put("size", properties.getBlobSize()); // Size in bytes
+            return ResponseEntity.ok(response);
+        } catch (BlobStorageException e) {
+            // Handle not found error
+            if (e.getStatusCode() == 404) {
                 Map<String, Long> response = new HashMap<>();
                 response.put("size", 0L); // File not found, size is 0
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
             }
+            // Handle other errors
+            Map<String, Long> response = new HashMap<>();
+            response.put("size", 0L); // Error occurred, size is 0
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         } catch (Exception e) {
-            // Return size as 0 in case of error
+            // Handle any other exceptions
             Map<String, Long> response = new HashMap<>();
             response.put("size", 0L); // Error occurred, size is 0
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
