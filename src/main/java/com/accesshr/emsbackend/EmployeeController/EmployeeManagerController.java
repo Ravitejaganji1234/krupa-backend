@@ -196,7 +196,7 @@ public class EmployeeManagerController {
     }
 
     // New login endpoint
-    @PostMapping(value="/login", consumes = "application/json", produces = "application/json")
+    @PostMapping(value="/login", produces = "application/json")
     public ResponseEntity<LoginResponse> login(@RequestBody LoginDTO loginDTO) {
         LoginResponse response = employeeManagerService.loginEmployee(loginDTO);
         return new ResponseEntity<>(response, response.getStatus() ? HttpStatus.OK : HttpStatus.UNAUTHORIZED);
