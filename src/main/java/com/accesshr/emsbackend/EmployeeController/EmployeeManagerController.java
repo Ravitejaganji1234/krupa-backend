@@ -101,7 +101,7 @@ public class EmployeeManagerController {
     }
 
     // Registration endpoint (for Admins)
-    @PostMapping(value="/register", produces = "application/json")
+    @PostMapping(value="/register", consumes = "application/json", produces = "application/json")
     public ResponseEntity<?> registerAdmin(
             @Valid @RequestParam("firstName") String firstName,
             @RequestParam("lastName") String lastName,
@@ -196,7 +196,7 @@ public class EmployeeManagerController {
     }
 
     // New login endpoint
-    @PostMapping(value="/login", produces = "application/json")
+    @PostMapping(value="/login", consumes = "application/json", produces = "application/json")
     public ResponseEntity<LoginResponse> login(@RequestBody LoginDTO loginDTO) {
         LoginResponse response = employeeManagerService.loginEmployee(loginDTO);
         return new ResponseEntity<>(response, response.getStatus() ? HttpStatus.OK : HttpStatus.UNAUTHORIZED);
